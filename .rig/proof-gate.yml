@@ -1,0 +1,106 @@
+# .rig/proof-gate.yml — ProofPacket Integration Config
+#
+# Installed by rig-doctrine-overlay. Consumed by .rig/verify.sh (L6-gate) and
+# by any external RIG orchestrator that signs/checks completion claims for
+# this repo. Nothing in this repo is considered "done" without a ProofPacket
+# that satisfies the thresholds below.
+
+apiVersion: rig.doctrine/v1
+kind: ProofGate
+metadata:
+  name: "rig-doctrine-overlay"
+  overlay_version: "1.0.0"
+  installed_by: rig-doctrine-overlay
+
+# ---------------------------------------------------------------------------
+# secret / signing key source
+# ---------------------------------------------------------------------------
+# The ProofPacket is HMAC-SHA256 signed so a completion claim cannot be forged
+# by an agent editing its own output. The key is NEVER committed to the repo.
+signing:
+  algorithm: HMAC-SHA256
+  key_source: env             # env | file | vault
+  key_env_var: RIG_PROOF_KEY  # export RIG_PROOF_KEY=... before signing
+  key_file_fallback: ~/.rig/keys/rig-doctrine-overlay.key   # used only if key_source=file
+  # Vault mode (optional, for orgs already running HashiCorp Vault or similar):
+  vault_path: "secret/rig/proof-keys/rig-doctrine-overlay"
+
+# ---------------------------------------------------------------------------
+# artifact paths — what gets hashed and bundled into the ProofPacket
+# ---------------------------------------------------------------------------
+artifacts:
+  # source tree fingerprint (excludes generated/vendor dirs)
+  source_paths:
+    - "src/**"
+    - "lib/**"
+    - "*.go"
+    - "*.py"
+    - "*.ts"
+    - "*.js"
+  exclude_paths:
+    - "node_modules/**"
+    - ".venv/**"
+    - "venv/**"
+    - "dist/**"
+    - "build/**"
+    - ".git/**"
+    - ".rig/proof-packet.json"   # never hash the output artifact itself
+  # evidence collected alongside the hash
+  evidence:
+    - path: ".rig/failures.json"
+      description: "L10 self-evolving regression ledger"
+    - path: "spec/features/"
+      description: "OpenSpec BDD behavior contracts"
+    - path: ".rig/verify.sh"
+      description: "L8 verifier script used to produce this packet"
+  # where the signed output is written
+  output_path: ".rig/proof-packet.json"
+
+# ---------------------------------------------------------------------------
+# hashing
+# ---------------------------------------------------------------------------
+hashing:
+  algorithm: sha256
+  # tree hash = sha256 of the sorted concatenation of (relative_path + "\0" +
+  # sha256(file_bytes)) for every file matched by artifacts.source_paths and
+  # not matched by artifacts.exclude_paths. Deterministic across machines.
+  tree_hash_mode: sorted-concat-sha256
+
+# ---------------------------------------------------------------------------
+# gate thresholds — enforced by .rig/verify.sh L6-gate
+# ---------------------------------------------------------------------------
+threshold:
+  # fraction of executed L8 layers that must report PASS
+  min_pass_rate: 1.0
+  # layers that are non-negotiable: even in --continue mode, a FAIL on any
+  # of these layers blocks signing regardless of overall pass rate
+  required_pass_layers:
+    - L1-syntax
+    - L2-unit
+    - L4-eval
+    - L8-signoff
+  # maximum age (hours) of a ProofPacket before it's considered stale and
+  # must be regenerated
+  max_packet_age_hours: 24
+  # minimum number of BDD scenarios required under spec/features/
+  min_bdd_scenarios: 1
+
+# ---------------------------------------------------------------------------
+# who is allowed to sign
+# ---------------------------------------------------------------------------
+signers:
+  # builder agents may PRODUCE a candidate packet, but only a verifier
+  # identity (human or a separate, independently-invoked agent session) may
+  # mark signed: true. See AGENTS.md "Builder != Verifier Separation".
+  allow_builder_self_sign: false
+  verifier_identities:
+    - "human"
+    - "rig-verifier-agent"
+
+# ---------------------------------------------------------------------------
+# CI wiring (optional — fill in for your CI provider)
+# ---------------------------------------------------------------------------
+ci:
+  fail_build_on_gate_miss: true
+  post_status_check: true
+  status_check_name: "RIG ProofGate"
