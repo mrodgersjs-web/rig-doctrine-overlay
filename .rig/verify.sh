@@ -11,7 +11,8 @@
 #   L2 unit         - do unit tests pass?
 #   L3 integration  - does the system boot/build end-to-end?
 #   L4 eval         - do the BDD spec/features describe real, checkable behavior?
-#   L5 proof        - does a ProofPacket-shaped artifact exist and hash-match?
+#   L5 doctrine     - rig_checks.py: done-claims have evidence, changed modules
+#                     have tests, no secret-shaped strings
 #   L6 gate         - does the run satisfy .rig/proof-gate.yml's threshold?
 #   L7 audit        - is there a human-readable trail (git log, CHANGELOG, commit msg)?
 #   L8 signoff      - is everything above green, producing a final signed verdict?
@@ -64,6 +65,25 @@ stop_if_needed() {
   fi
 }
 
+# py_syntax_errors <root>: compile every .py file in memory (writes no .pyc files)
+py_syntax_errors() {
+  python3 - "$1" <<'PY'
+import os, sys
+root = sys.argv[1]
+skip = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox"}
+for d, dirs, files in os.walk(root):
+    dirs[:] = [x for x in dirs if x not in skip]
+    for f in files:
+        if f.endswith(".py"):
+            p = os.path.join(d, f)
+            try:
+                with open(p, "rb") as fh:
+                    compile(fh.read(), p, "exec")
+            except (SyntaxError, ValueError) as e:
+                print(f"{p}: {e}")
+PY
+}
+
 detect_stack() {
   if [ -f "$REPO_ROOT/package.json" ]; then echo "node"
   elif [ -f "$REPO_ROOT/pyproject.toml" ] || [ -f "$REPO_ROOT/setup.py" ]; then echo "python"
@@ -93,14 +113,14 @@ if should_run 1; then
           node --check "$f" >/tmp/rig-l1.$$ 2>&1 || { bad=1; evid "$(cat /tmp/rig-l1.$$)"; }
         done < <(find "$REPO_ROOT" -maxdepth 3 -name '*.js' -not -path '*/node_modules/*' 2>/dev/null)
         rm -f /tmp/rig-l1.$$
-        [ "$bad" -eq 0 ] && result "L1-syntax" PASS "all .js files parse" || result "L1-syntax" FAIL "one or more .js files failed node --check"
+        if [ "$bad" -eq 0 ]; then result "L1-syntax" PASS "all .js files parse"; else result "L1-syntax" FAIL "one or more .js files failed node --check"; fi
       else
         result "L1-syntax" PASS "node unavailable, gate treated as no-op"
       fi
       ;;
     python)
       if command -v python3 >/dev/null 2>&1; then
-        out="$(python3 -m py_compile $(find "$REPO_ROOT" -maxdepth 4 -name '*.py' -not -path '*/.venv/*' 2>/dev/null) 2>&1)"
+        out="$(py_syntax_errors "$REPO_ROOT" 2>&1)"
         if [ -z "$out" ]; then result "L1-syntax" PASS "all .py files compile"; else evid "$out"; result "L1-syntax" FAIL "py_compile reported errors"; fi
       else
         result "L1-syntax" PASS "python3 unavailable, gate treated as no-op"
@@ -118,7 +138,7 @@ if should_run 1; then
       if command -v cargo >/dev/null 2>&1; then
         cargo check --quiet --manifest-path "$REPO_ROOT/Cargo.toml" >/tmp/rig-l1.$$ 2>&1
         rc=$?
-        [ $rc -eq 0 ] && result "L1-syntax" PASS "cargo check clean" || { evid "$(tail -20 /tmp/rig-l1.$$)"; result "L1-syntax" FAIL "cargo check failed"; }
+        if [ $rc -eq 0 ]; then result "L1-syntax" PASS "cargo check clean"; else evid "$(tail -20 /tmp/rig-l1.$$)"; result "L1-syntax" FAIL "cargo check failed"; fi
         rm -f /tmp/rig-l1.$$
       else
         result "L1-syntax" PASS "cargo unavailable, gate treated as no-op"
@@ -142,7 +162,7 @@ if should_run 2; then
         (cd "$REPO_ROOT" && npm test --silent) >/tmp/rig-l2.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l2.$$)"
-        [ $rc -eq 0 ] && result "L2-unit" PASS "npm test exited 0" || result "L2-unit" FAIL "npm test exited $rc"
+        if [ $rc -eq 0 ]; then result "L2-unit" PASS "npm test exited 0"; else result "L2-unit" FAIL "npm test exited $rc"; fi
         rm -f /tmp/rig-l2.$$
       fi
       ;;
@@ -152,7 +172,7 @@ if should_run 2; then
         (cd "$REPO_ROOT" && pytest -q) >/tmp/rig-l2.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l2.$$)"
-        [ $rc -eq 0 ] && result "L2-unit" PASS "pytest exited 0" || result "L2-unit" FAIL "pytest exited $rc"
+        if [ $rc -eq 0 ]; then result "L2-unit" PASS "pytest exited 0"; else result "L2-unit" FAIL "pytest exited $rc"; fi
         rm -f /tmp/rig-l2.$$
       fi
       ;;
@@ -162,7 +182,7 @@ if should_run 2; then
         (cd "$REPO_ROOT" && go test ./...) >/tmp/rig-l2.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l2.$$)"
-        [ $rc -eq 0 ] && result "L2-unit" PASS "go test exited 0" || result "L2-unit" FAIL "go test exited $rc"
+        if [ $rc -eq 0 ]; then result "L2-unit" PASS "go test exited 0"; else result "L2-unit" FAIL "go test exited $rc"; fi
         rm -f /tmp/rig-l2.$$
       fi
       ;;
@@ -172,7 +192,7 @@ if should_run 2; then
         (cd "$REPO_ROOT" && cargo test --quiet) >/tmp/rig-l2.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l2.$$)"
-        [ $rc -eq 0 ] && result "L2-unit" PASS "cargo test exited 0" || result "L2-unit" FAIL "cargo test exited $rc"
+        if [ $rc -eq 0 ]; then result "L2-unit" PASS "cargo test exited 0"; else result "L2-unit" FAIL "cargo test exited $rc"; fi
         rm -f /tmp/rig-l2.$$
       fi
       ;;
@@ -194,7 +214,7 @@ if should_run 3; then
         (cd "$REPO_ROOT" && go build ./...) >/tmp/rig-l3.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l3.$$)"
-        [ $rc -eq 0 ] && result "L3-integration" PASS "go build ./... succeeded" || result "L3-integration" FAIL "go build failed"
+        if [ $rc -eq 0 ]; then result "L3-integration" PASS "go build ./... succeeded"; else result "L3-integration" FAIL "go build failed"; fi
         rm -f /tmp/rig-l3.$$
       fi
       ;;
@@ -204,7 +224,7 @@ if should_run 3; then
         (cd "$REPO_ROOT" && cargo build --quiet) >/tmp/rig-l3.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l3.$$)"
-        [ $rc -eq 0 ] && result "L3-integration" PASS "cargo build succeeded" || result "L3-integration" FAIL "cargo build failed"
+        if [ $rc -eq 0 ]; then result "L3-integration" PASS "cargo build succeeded"; else result "L3-integration" FAIL "cargo build failed"; fi
         rm -f /tmp/rig-l3.$$
       fi
       ;;
@@ -214,19 +234,20 @@ if should_run 3; then
         (cd "$REPO_ROOT" && npm run build --silent) >/tmp/rig-l3.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l3.$$)"
-        [ $rc -eq 0 ] && result "L3-integration" PASS "npm run build succeeded" || result "L3-integration" FAIL "npm run build failed"
+        if [ $rc -eq 0 ]; then result "L3-integration" PASS "npm run build succeeded"; else result "L3-integration" FAIL "npm run build failed"; fi
         rm -f /tmp/rig-l3.$$
       fi
       ;;
     python)
-      pkg="$(find "$REPO_ROOT" -maxdepth 2 -name '__init__.py' -printf '%h\n' 2>/dev/null | head -1)"
+      pkg="$(find "$REPO_ROOT" -maxdepth 2 -name '__init__.py' -not -path '*/.rig/*' 2>/dev/null | head -1)"
+      pkg="${pkg%/__init__.py}"
       if [ -n "$pkg" ]; then
         ran=1
         modname="$(basename "$pkg")"
         (cd "$REPO_ROOT" && python3 -c "import $modname") >/tmp/rig-l3.$$ 2>&1
         rc=$?
         evid "$(tail -15 /tmp/rig-l3.$$)"
-        [ $rc -eq 0 ] && result "L3-integration" PASS "import $modname succeeded" || result "L3-integration" FAIL "import $modname failed"
+        if [ $rc -eq 0 ]; then result "L3-integration" PASS "import $modname succeeded"; else result "L3-integration" FAIL "import $modname failed"; fi
         rm -f /tmp/rig-l3.$$
       fi
       ;;
@@ -253,21 +274,24 @@ if should_run 4; then
 fi
 
 # ---------------------------------------------------------------------------
-# L5 proof — ProofPacket artifact must exist and its recorded hash must match
-# the current tree state it claims to describe.
+# L5 doctrine — rig_checks.py: done-claims need evidence, changed modules need
+# tests, no secret-shaped strings. Set RIG_BASE_REF to diff against a branch.
 # ---------------------------------------------------------------------------
 if should_run 5; then
-  header "L5 — proof"
-  packet="$RIG_DIR/proof-packet.json"
-  if [ -f "$packet" ]; then
-    evid "found $packet"
-    result "L5-proof" PASS "ProofPacket artifact present"
-  elif [ -f "$PROOF_GATE" ]; then
-    evid "no proof-packet.json yet, but proof-gate.yml is configured — this is expected pre-first-run"
-    result "L5-proof" PASS "proof-gate.yml configured, packet will be generated on next signed run"
+  header "L5 — doctrine"
+  if [ ! -f "$RIG_DIR/rig_checks.py" ]; then
+    result "L5-doctrine" FAIL ".rig/rig_checks.py missing — overlay was not fully applied"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    result "L5-doctrine" FAIL "python3 not on PATH — doctrine checks cannot run"
   else
-    evid "$PROOF_GATE not found"
-    result "L5-proof" FAIL ".rig/proof-gate.yml missing — overlay was not fully applied"
+    out="$(python3 "$RIG_DIR/rig_checks.py" all --root "$REPO_ROOT" 2>&1)"
+    rc=$?
+    evid "$out"
+    if [ $rc -eq 0 ]; then
+      result "L5-doctrine" PASS "claims, tests and secrets checks clean"
+    else
+      result "L5-doctrine" FAIL "doctrine violations found (rig_checks.py exit $rc)"
+    fi
   fi
   stop_if_needed
 fi

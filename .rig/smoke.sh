@@ -3,7 +3,7 @@
 #
 # Installed by rig-doctrine-overlay. Runs five smoke gates in order:
 #   1. syntax check       2. unit tests        3. integration smoke
-#   4. eval gate          5. proof verification
+#   4. eval gate          5. doctrine checks
 #
 # Self-evolving: with --learn, any gate that FAILs is appended to
 # .rig/failures.json as a permanent record. On the NEXT run, smoke.sh
@@ -88,6 +88,25 @@ should_run() {
   [ "$ONLY_GATE" -eq 0 ] || [ "$ONLY_GATE" = "$1" ]
 }
 
+# py_syntax_errors <root>: compile every .py file in memory (writes no .pyc files)
+py_syntax_errors() {
+  python3 - "$1" <<'PY'
+import os, sys
+root = sys.argv[1]
+skip = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox"}
+for d, dirs, files in os.walk(root):
+    dirs[:] = [x for x in dirs if x not in skip]
+    for f in files:
+        if f.endswith(".py"):
+            p = os.path.join(d, f)
+            try:
+                with open(p, "rb") as fh:
+                    compile(fh.read(), p, "exec")
+            except (SyntaxError, ValueError) as e:
+                print(f"{p}: {e}")
+PY
+}
+
 detect_stack() {
   if [ -f "$REPO_ROOT/package.json" ]; then echo "node"
   elif [ -f "$REPO_ROOT/pyproject.toml" ] || [ -f "$REPO_ROOT/setup.py" ] || [ -f "$REPO_ROOT/requirements.txt" ]; then echo "python"
@@ -128,7 +147,7 @@ if should_run 1; then
       ;;
     python)
       if command -v python3 >/dev/null 2>&1; then
-        out="$(python3 -m py_compile $(find "$REPO_ROOT" -maxdepth 4 -name '*.py' -not -path '*/.venv/*' -not -path '*/venv/*' 2>/dev/null) 2>&1)"
+        out="$(py_syntax_errors "$REPO_ROOT" 2>&1)"
         if [ -n "$out" ]; then gate_ok=0; fail "python syntax errors"; echo "$out"; fi
       else
         skip "python3 not on PATH"
@@ -244,7 +263,8 @@ if should_run 3; then
       fi
       ;;
     python)
-      pkg="$(find "$REPO_ROOT" -maxdepth 2 -name '__init__.py' -printf '%h\n' 2>/dev/null | head -1)"
+      pkg="$(find "$REPO_ROOT" -maxdepth 2 -name '__init__.py' -not -path '*/.rig/*' 2>/dev/null | head -1)"
+      pkg="${pkg%/__init__.py}"
       if [ -n "$pkg" ]; then
         modname="$(basename "$pkg")"
         (cd "$REPO_ROOT" && python3 -c "import $modname" ) >/tmp/rig-smoke.$$ 2>&1 || gate_ok=0
@@ -318,22 +338,22 @@ if should_run 4; then
 fi
 
 # ---------------------------------------------------------------------------
-# Gate 5: proof verification (delegates to verify.sh L5-proof layer only)
+# Gate 5: doctrine checks (delegates to verify.sh L5-doctrine layer only)
 # ---------------------------------------------------------------------------
 if should_run 5; then
   log ""
-  log "-- Gate 5/5: proof verification --"
+  log "-- Gate 5/5: doctrine checks --"
   if [ -x "$RIG_DIR/verify.sh" ]; then
     "$RIG_DIR/verify.sh" --layer=5
     rc=$?
     if [ $rc -ne 0 ]; then
       OVERALL_STATUS=1
-      record_failure "L5-proof" "verify.sh --layer=5 exited non-zero"
+      record_failure "L5-doctrine" "verify.sh --layer=5 exited non-zero"
     fi
   else
     fail ".rig/verify.sh not found or not executable"
     OVERALL_STATUS=1
-    record_failure "L5-proof" ".rig/verify.sh missing"
+    record_failure "L5-doctrine" ".rig/verify.sh missing"
   fi
 fi
 
