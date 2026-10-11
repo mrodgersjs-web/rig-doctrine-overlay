@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# apply-overlay.sh — RIG Doctrine Overlay installer
+# apply-overlay.sh - RIG Doctrine Overlay installer
 #
-# Transforms any AI repo into a RIG-governed FDE-standard repo by copying in
-# the 5-layer overlay: TAC doctrine, L10 self-evolving smoke tests, L8
-# eight-layer verification, OpenSpec BDD, and ProofPacket gates.
+# Copies the overlay into a target repo: AGENTS.md doctrine, CLAUDE.md pointer,
+# .rig/smoke.sh, .rig/verify.sh, .rig/rig_checks.py (doctrine checks),
+# .rig/proof-gate.yml, an empty .rig/claims.jsonl ledger, a BDD example under
+# spec/features/, and a governance header at the top of the README.
+#
+# Every file it creates or modifies is recorded in .rig/overlay/manifest.tsv,
+# and the original of every modified file is saved under .rig/overlay/backup/,
+# so uninstall-overlay.sh can put the target back exactly as it was.
 #
 # Usage:
 #   ./apply-overlay.sh <target-repo-path>
-#   ./apply-overlay.sh <target-repo-path> --force     # overwrite existing .rig/
-#   ./apply-overlay.sh <target-repo-path> --dry-run    # show what would happen
+#   ./apply-overlay.sh <target-repo-path> --force     # reinstall over a previous overlay install
+#                                                    # (also overwrites an existing AGENTS.md/CLAUDE.md, backed up)
+#   ./apply-overlay.sh <target-repo-path> --dry-run   # show what would happen, write nothing
 #
-# Exit codes: 0 success, 1 bad usage, 2 target already has .rig/ (without --force)
+# Exit codes: 0 success, 1 bad usage or incomplete install,
+#             2 target already has .rig/ (overlay without --force, or a foreign .rig/)
 
 set -uo pipefail
 
@@ -22,7 +29,7 @@ DRY_RUN=0
 TARGET=""
 
 usage() {
-  grep '^#' "$0" | sed 's/^#//'
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 for arg in "$@"; do
@@ -30,8 +37,9 @@ for arg in "$@"; do
     --force) FORCE=1 ;;
     --dry-run) DRY_RUN=1 ;;
     -h|--help) usage; exit 0 ;;
+    -*) echo "error: unknown option: $arg" >&2; exit 1 ;;
     *)
-      if [ -z "$TARGET" ]; then TARGET="$arg"; fi
+      if [ -z "$TARGET" ]; then TARGET="$arg"; else echo "error: unexpected argument: $arg" >&2; exit 1; fi
       ;;
   esac
 done
@@ -48,217 +56,208 @@ if [ ! -d "$TARGET" ]; then
 fi
 
 TARGET="$(cd "$TARGET" && pwd)"
+MANIFEST_REL=".rig/overlay/manifest.tsv"
+BACKUP_REL=".rig/overlay/backup"
 
 log()  { printf '%s\n' "$*"; }
-step() { printf '\033[36m==>\033[0m %s\n' "$*"; }
-ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
-skip() { printf '  \033[33mSKIP\033[0m  %s\n' "$*"; }
+step() { printf '==> %s\n' "$*"; }
+ok()   { printf '  OK    %s\n' "$*"; }
+skip() { printf '  SKIP  %s\n' "$*"; }
 
-do_copy() {
-  # do_copy <src> <dst> <label>
-  local src="$1" dst="$2" label="$3"
+# record <kind> <relpath>   kind: created | modified | dir
+record() {
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  printf '%s\t%s\n' "$1" "$2" >> "$TARGET/$MANIFEST_REL"
+}
+
+# ensure_dir <relpath>: mkdir -p, recording each directory component it creates
+ensure_dir() {
+  local rel="$1" acc="" part
+  local IFS='/'
+  for part in $rel; do
+    [ -n "$part" ] || continue
+    acc="${acc:+$acc/}$part"
+    if [ ! -d "$TARGET/$acc" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "  [dry-run] would create dir: $acc/"
+      else
+        mkdir "$TARGET/$acc"
+        record dir "$acc"
+      fi
+    fi
+  done
+}
+
+# backup_if_exists <relpath>: save the original before we modify it
+backup_if_exists() {
+  local rel="$1"
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  if [ -f "$TARGET/$rel" ]; then
+    mkdir -p "$(dirname "$TARGET/$BACKUP_REL/$rel")"
+    cp -p "$TARGET/$rel" "$TARGET/$BACKUP_REL/$rel"
+    record modified "$rel"
+  else
+    record created "$rel"
+  fi
+}
+
+# install_file <src> <relpath-in-target>
+install_file() {
+  local src="$1" rel="$2"
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "  [dry-run] would write: $dst"
+    log "  [dry-run] would write: $rel"
     return 0
   fi
-  mkdir -p "$(dirname "$dst")"
-  cp "$src" "$dst"
-  ok "$label -> ${dst#$TARGET/}"
+  ensure_dir "$(dirname "$rel")"
+  # files under .rig/ are removed wholesale on uninstall; no per-file record needed
+  case "$rel" in
+    .rig/*) ;;
+    *) backup_if_exists "$rel" ;;
+  esac
+  cp "$src" "$TARGET/$rel"
+  ok "$rel"
 }
 
 log "=================================================================="
-log " RIG Doctrine Overlay — applying to: $TARGET"
+log " RIG Doctrine Overlay - applying to: $TARGET"
 log " overlay source: $SELF_DIR"
 log " mode: $([ "$DRY_RUN" -eq 1 ] && echo 'dry-run' || echo 'apply')$([ "$FORCE" -eq 1 ] && echo ' (force)' || echo '')"
 log "=================================================================="
 
 # ---------------------------------------------------------------------------
-# Step 0: check for existing .rig/
+# Step 0: existing .rig/
 # ---------------------------------------------------------------------------
 step "Step 0/7: checking for existing .rig/ directory"
-if [ -d "$TARGET/.rig" ] && [ "$FORCE" -ne 1 ]; then
-  echo ""
-  echo "error: $TARGET/.rig already exists." >&2
-  echo "This repo may already have the RIG overlay applied. Re-run with --force" >&2
-  echo "to overwrite, or inspect $TARGET/.rig manually first." >&2
-  exit 2
-elif [ -d "$TARGET/.rig" ]; then
-  skip "existing .rig/ found — will overwrite (--force set)"
+if [ -d "$TARGET/.rig" ]; then
+  if [ ! -f "$TARGET/$MANIFEST_REL" ]; then
+    echo "error: $TARGET/.rig exists but was not installed by this overlay (no $MANIFEST_REL)." >&2
+    echo "Refusing to touch it, even with --force: uninstall could not restore it." >&2
+    exit 2
+  fi
+  if [ "$FORCE" -ne 1 ]; then
+    echo "error: $TARGET already has the overlay installed. Re-run with --force to reinstall." >&2
+    exit 2
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "  [dry-run] would uninstall the previous overlay, then reinstall"
+  else
+    step "removing previous overlay install first (--force)"
+    "$SELF_DIR/uninstall-overlay.sh" "$TARGET" >/dev/null || { echo "error: uninstall of previous overlay failed" >&2; exit 1; }
+    ok "previous overlay removed; target restored"
+  fi
 else
-  ok "no existing .rig/ — clean install"
+  ok "no existing .rig/ - clean install"
 fi
-[ "$DRY_RUN" -eq 1 ] || mkdir -p "$TARGET/.rig"
+if [ "$DRY_RUN" -ne 1 ]; then
+  mkdir -p "$TARGET/.rig/overlay/backup"
+  : > "$TARGET/$MANIFEST_REL"
+  record dir ".rig"
+fi
 
 # ---------------------------------------------------------------------------
-# Step 1: AGENTS.md from template
+# Step 1: AGENTS.md + CLAUDE.md
 # ---------------------------------------------------------------------------
 step "Step 1/7: installing AGENTS.md (TAC doctrine)"
 if [ -f "$TARGET/AGENTS.md" ] && [ "$FORCE" -ne 1 ]; then
-  skip "AGENTS.md already exists at target — preserving (use --force to overwrite)"
+  skip "AGENTS.md already exists - preserving (use --force to overwrite)"
 else
-  do_copy "$TEMPLATES_DIR/AGENTS.md" "$TARGET/AGENTS.md" "AGENTS.md"
+  install_file "$TEMPLATES_DIR/AGENTS.md" "AGENTS.md"
 fi
-
-# CLAUDE.md / codex context files commonly point at AGENTS.md by convention;
-# create a thin pointer for tools that specifically look for CLAUDE.md.
-if [ ! -f "$TARGET/CLAUDE.md" ] || [ "$FORCE" -eq 1 ]; then
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log "  [dry-run] would write: $TARGET/CLAUDE.md"
-  else
-    cat > "$TARGET/CLAUDE.md" <<'EOF'
-# CLAUDE.md
-
-This repository's agent doctrine lives in [`AGENTS.md`](./AGENTS.md) — read it
-first. `AGENTS.md` is the canonical, tool-agnostic context root (Claude Code,
-Codex, Cursor, Aider, and others all read it); this file exists only because
-some Claude-specific tooling looks for `CLAUDE.md` by name.
-EOF
-    ok "CLAUDE.md -> pointer to AGENTS.md"
-  fi
+if [ -f "$TARGET/CLAUDE.md" ] && [ "$FORCE" -ne 1 ]; then
+  skip "CLAUDE.md already exists - preserving"
 else
-  skip "CLAUDE.md already exists — preserving"
+  install_file "$TEMPLATES_DIR/CLAUDE.md" "CLAUDE.md"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: .rig/smoke.sh (L10)
+# Step 2-3: harness scripts
 # ---------------------------------------------------------------------------
-step "Step 2/7: installing .rig/smoke.sh (L10 self-evolving smoke harness)"
-do_copy "$TEMPLATES_DIR/smoke.sh" "$TARGET/.rig/smoke.sh" "smoke.sh"
-[ "$DRY_RUN" -eq 1 ] || chmod +x "$TARGET/.rig/smoke.sh"
-
-# ---------------------------------------------------------------------------
-# Step 3: .rig/verify.sh (L8)
-# ---------------------------------------------------------------------------
-step "Step 3/7: installing .rig/verify.sh (L8 eight-layer verification)"
-do_copy "$TEMPLATES_DIR/verify.sh" "$TARGET/.rig/verify.sh" "verify.sh"
-[ "$DRY_RUN" -eq 1 ] || chmod +x "$TARGET/.rig/verify.sh"
+step "Step 2/7: installing .rig/smoke.sh (L10 smoke harness)"
+install_file "$TEMPLATES_DIR/smoke.sh" ".rig/smoke.sh"
+step "Step 3/7: installing .rig/verify.sh and .rig/rig_checks.py (L8 verification + doctrine checks)"
+install_file "$TEMPLATES_DIR/verify.sh" ".rig/verify.sh"
+install_file "$TEMPLATES_DIR/rig_checks.py" ".rig/rig_checks.py"
+if [ "$DRY_RUN" -ne 1 ]; then
+  chmod +x "$TARGET/.rig/smoke.sh" "$TARGET/.rig/verify.sh" "$TARGET/.rig/rig_checks.py"
+  [ -f "$TARGET/.rig/failures.json" ] || echo '{"failures": []}' > "$TARGET/.rig/failures.json"
+  [ -f "$TARGET/.rig/claims.jsonl" ] || printf '%s\n' '# one JSON object per line: {"id": "...", "status": "done", "claim": "...", "evidence": {"path": "..."} or {"command": "...", "output": "..."}}' > "$TARGET/.rig/claims.jsonl"
+  ok ".rig/failures.json + .rig/claims.jsonl ledgers"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 4: spec/features/ (BDD)
 # ---------------------------------------------------------------------------
-step "Step 4/7: installing spec/features/ (OpenSpec BDD)"
-if [ -d "$TARGET/spec/features" ] && [ "$(find "$TARGET/spec/features" -name '*.feature' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ] && [ "$FORCE" -ne 1 ]; then
-  skip "spec/features/ already contains .feature files — preserving"
+step "Step 4/7: installing spec/features/ (BDD)"
+if [ -d "$TARGET/spec/features" ] && [ -n "$(find "$TARGET/spec/features" -name '*.feature' 2>/dev/null | head -1)" ]; then
+  skip "spec/features/ already contains .feature files - preserving"
 else
-  do_copy "$TEMPLATES_DIR/feature.template.feature" "$TARGET/spec/features/example.feature" "spec/features/example.feature"
+  install_file "$TEMPLATES_DIR/feature.template.feature" "spec/features/example.feature"
 fi
 
 # ---------------------------------------------------------------------------
 # Step 5: .rig/proof-gate.yml
 # ---------------------------------------------------------------------------
-step "Step 5/7: installing .rig/proof-gate.yml (ProofPacket config)"
-repo_slug="$(basename "$TARGET")"
+step "Step 5/7: installing .rig/proof-gate.yml"
+repo_slug="$(basename "$TARGET" | tr -cd 'A-Za-z0-9._-')"
 if [ "$DRY_RUN" -eq 1 ]; then
-  log "  [dry-run] would write: $TARGET/.rig/proof-gate.yml (slug=$repo_slug)"
+  log "  [dry-run] would write: .rig/proof-gate.yml (slug=$repo_slug)"
 else
   sed "s/<REPLACE: repo-slug>/$repo_slug/g; s#<repo-slug>#$repo_slug#g" \
     "$TEMPLATES_DIR/proof-gate.yml" > "$TARGET/.rig/proof-gate.yml"
-  ok "proof-gate.yml -> .rig/proof-gate.yml (metadata.name=$repo_slug)"
-fi
-
-# seed an empty failures ledger so smoke.sh --learn has somewhere to write
-if [ ! -f "$TARGET/.rig/failures.json" ]; then
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log "  [dry-run] would write: $TARGET/.rig/failures.json"
-  else
-    echo '{"failures": []}' > "$TARGET/.rig/failures.json"
-    ok "failures.json -> .rig/failures.json (empty ledger)"
-  fi
+  ok ".rig/proof-gate.yml (metadata.name=$repo_slug)"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6: update README with FDE standard header
+# Step 6: README header
 # ---------------------------------------------------------------------------
-step "Step 6/7: prepending FDE standard header to README"
-readme=""
-for candidate in README.md Readme.md README.rst README; do
-  if [ -f "$TARGET/$candidate" ]; then readme="$TARGET/$candidate"; break; fi
+step "Step 6/7: prepending governance header to README"
+readme_rel=""
+for candidate in README.md Readme.md readme.md README.rst README; do
+  if [ -f "$TARGET/$candidate" ]; then readme_rel="$candidate"; break; fi
 done
-
-if [ -z "$readme" ]; then
-  readme="$TARGET/README.md"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log "  [dry-run] no README found; would create $readme from header template"
-  else
-    cp "$TEMPLATES_DIR/README-header.md" "$readme"
-    ok "no README found -> created README.md from header template"
-  fi
+if [ -z "$readme_rel" ]; then
+  install_file "$TEMPLATES_DIR/README-header.md" "README.md"
+elif grep -q 'FDE STANDARD HEADER' "$TARGET/$readme_rel" 2>/dev/null; then
+  skip "$readme_rel already has the header - preserving"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  log "  [dry-run] would prepend header to $readme_rel"
 else
-  if grep -q "RIG Doctrine Overlay" "$readme" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
-    skip "$( basename "$readme") already has the FDE header — preserving"
-  else
-    if [ "$DRY_RUN" -eq 1 ]; then
-      log "  [dry-run] would prepend FDE header to $readme (stripping any prior header first)"
-    else
-      # Idempotent under repeated --force: if a prior FDE header block is
-      # already present, strip it out (start marker through its trailing
-      # separator line, plus a leading bare separator line if present)
-      # before prepending a fresh copy — this prevents header duplication
-      # on repeated --force applies.
-      body="$readme"
-      start_line="$(grep -n 'FDE STANDARD HEADER — installed by rig-doctrine-overlay' "$readme" 2>/dev/null | head -1 | cut -d: -f1)"
-      if [ -n "$start_line" ]; then
-        prev_line=$((start_line - 1))
-        if [ "$prev_line" -ge 1 ] && sed -n "${prev_line}p" "$readme" | grep -qE '^<!-- =+ -->$'; then
-          start_line="$prev_line"
-        fi
-        end_marker_line="$(grep -n 'END FDE STANDARD HEADER' "$readme" 2>/dev/null | head -1 | cut -d: -f1)"
-        if [ -n "$end_marker_line" ]; then
-          end_line=$((end_marker_line + 1))
-          stripped="$(mktemp)"
-          sed "${start_line},${end_line}d" "$readme" > "$stripped"
-          # drop one leading blank line left behind, if any
-          sed -i.bak '1{/^$/d}' "$stripped" 2>/dev/null; rm -f "${stripped}.bak"
-          body="$stripped"
-        fi
-      fi
-      tmp="$(mktemp)"
-      cat "$TEMPLATES_DIR/README-header.md" "$body" > "$tmp"
-      mv "$tmp" "$readme"
-      [ -n "${stripped:-}" ] && [ -f "$stripped" ] && rm -f "$stripped"
-      ok "$(basename "$readme") -> FDE header prepended (idempotent)"
-    fi
-  fi
+  backup_if_exists "$readme_rel"
+  tmp="$(mktemp)"
+  cat "$TEMPLATES_DIR/README-header.md" "$TARGET/$readme_rel" > "$tmp"
+  cat "$tmp" > "$TARGET/$readme_rel"   # keep the original file's mode
+  rm -f "$tmp"
+  ok "$readme_rel -> header prepended"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: sanity check the install
+# Step 7: sanity check
 # ---------------------------------------------------------------------------
 step "Step 7/7: sanity-checking the install"
 if [ "$DRY_RUN" -eq 1 ]; then
   log "  [dry-run] skipping sanity check"
 else
   missing=0
-  for f in AGENTS.md .rig/smoke.sh .rig/verify.sh .rig/proof-gate.yml; do
-    if [ -f "$TARGET/$f" ]; then
-      ok "$f present"
-    else
-      echo "  MISSING $f" >&2
-      missing=1
-    fi
+  for f in AGENTS.md .rig/smoke.sh .rig/verify.sh .rig/rig_checks.py .rig/proof-gate.yml "$MANIFEST_REL"; do
+    if [ -f "$TARGET/$f" ]; then ok "$f present"; else echo "  MISSING $f" >&2; missing=1; fi
   done
-  if [ "$(find "$TARGET/spec/features" -name '*.feature' 2>/dev/null | wc -l | tr -d ' ')" -gt 0 ]; then
+  if [ -n "$(find "$TARGET/spec/features" -name '*.feature' 2>/dev/null | head -1)" ]; then
     ok "spec/features/*.feature present"
   else
-    echo "  MISSING spec/features/*.feature" >&2
-    missing=1
+    echo "  MISSING spec/features/*.feature" >&2; missing=1
   fi
   if [ "$missing" -eq 1 ]; then
-    echo "" >&2
-    echo "error: overlay install incomplete — see MISSING lines above" >&2
+    echo "error: overlay install incomplete - see MISSING lines above" >&2
     exit 1
   fi
 fi
 
 log ""
 log "=================================================================="
-log " RIG Doctrine Overlay applied successfully."
-log ""
-log " Next steps:"
-log "   1. cd $TARGET"
-log "   2. Edit AGENTS.md 'Project Conventions' section for this repo's stack"
-log "   3. Replace spec/features/example.feature with real BDD scenarios"
-log "   4. Run: .rig/smoke.sh --learn"
-log "   5. Run: .rig/verify.sh"
-log "   6. export RIG_PROOF_KEY=... and wire signing into CI (.rig/proof-gate.yml)"
+log " RIG Doctrine Overlay applied."
+log " Next: cd $TARGET"
+log "   python3 .rig/rig_checks.py all   # claims / tests / secrets"
+log "   .rig/verify.sh --continue        # 8-layer verification"
+log "   .rig/smoke.sh --learn            # smoke gates + failure ledger"
+log " Remove with: $SELF_DIR/uninstall-overlay.sh $TARGET"
 log "=================================================================="

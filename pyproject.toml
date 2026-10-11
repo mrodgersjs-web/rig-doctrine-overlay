@@ -1,0 +1,13 @@
+# Tool configuration only: the overlay ships as shell scripts + a stdlib Python
+# module (templates/rig_checks.py). Nothing to build or install.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP006", "UP007", "UP035"]

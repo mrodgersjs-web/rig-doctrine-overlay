@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install test tools
+        run: python -m pip install pytest ruff
+      - name: Lint shell (shellcheck)
+        run: shellcheck apply-overlay.sh uninstall-overlay.sh scripts/*.sh templates/*.sh .rig/*.sh
+      - name: Lint Python (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Tests
+        run: python -m pytest -v
+      - name: Smoke - overlay a fresh sample repo end to end
+        run: scripts/smoke-e2e.sh
+      - name: Dogfood - doctrine checks on this repo
+        env:
+          RIG_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD~1' }}
+        run: python3 .rig/rig_checks.py all
