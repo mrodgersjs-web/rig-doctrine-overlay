@@ -1,4 +1,6 @@
 <div align="center">
+
+![CI status](https://img.shields.io/github/actions/workflow/status/mrodgersjs-web/rig-doctrine-overlay/rig-lattice.yml?label=CI&logo=github-actions)
   <img src="assets/rig-doctrine-overlay-hero.png" width="100%" />
 </div>
 
